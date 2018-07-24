@@ -259,6 +259,8 @@ class HTCMapper:
                 f'$(Item).out={self.outputs_dir / "$(Item).out"}',
             ]) + '"',
         )
+
+        print(dict(submit_dict))
         sub = htcondor.Submit(submit_dict)
 
         schedd = htcondor.Schedd()
