@@ -10,6 +10,7 @@ import htcondor
 import cloudpickle
 
 from .settings import settings
+from .submit_description import SubmitDescription
 
 
 def hash_bytes(bytes: bytes) -> str:
@@ -55,7 +56,7 @@ def htcmap(name: Optional[str] = None, submit_descriptors: Optional[Dict] = None
         return HTCMapper(
             func,
             name = name if isinstance(name, str) else func.__name__,
-            submit_descriptors = submit_descriptors,
+            submit_description = submit_descriptors,
         )
 
     # if called like @htcmap, without parens, name is actually the function
@@ -158,10 +159,10 @@ class JobBuilder:
 
 
 class HTCMapper:
-    def __init__(self, func: Callable, name: str, submit_descriptors = None):
+    def __init__(self, func: Callable, name: str, submit_description = None):
         self.func = func
         self.name = name
-        self.submit_descriptors = submit_descriptors or {}
+        self.submit_description = submit_description or {}
 
         self.job_dir = settings.HTCMAP_DIR / name
         self.inputs_dir = self.job_dir / 'inputs'
@@ -188,12 +189,12 @@ class HTCMapper:
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
 
-    def map(self, args, **kwargs) -> MapResult:
+    def map(self, args, submit_description = None, **kwargs) -> MapResult:
         args = ((arg,) for arg in args)
         args_and_kwargs = zip(args, itertools.repeat(kwargs))
-        return self._map(args_and_kwargs)
+        return self._map(args_and_kwargs, submit_description)
 
-    def productmap(self, *args, **kwargs) -> MapResult:
+    def productmap(self, *args, submit_description = None, **kwargs) -> MapResult:
         dicts = [{}]
         for key, values in kwargs.items():
             values = tuple(values)
@@ -204,16 +205,16 @@ class HTCMapper:
         args = itertools.repeat(args)
         args_and_kwargs = zip(args, dicts)
 
-        return self._map(args_and_kwargs)
+        return self._map(args_and_kwargs, submit_description)
 
-    def starmap(self, args: Iterable[Tuple] = (), kwargs: Iterable[Dict] = ()) -> MapResult:
+    def starmap(self, args: Iterable[Tuple] = (), kwargs: Iterable[Dict] = (), submit_description = None) -> MapResult:
         args_and_kwargs = zip_args_and_kwargs(args, kwargs)
-        return self._map(args_and_kwargs)
+        return self._map(args_and_kwargs, submit_description)
 
     def build_job(self):
         return JobBuilder(mapper = self)
 
-    def _map(self, args_and_kwargs) -> MapResult:
+    def _map(self, args_and_kwargs, submit_description) -> MapResult:
         hashes = []
         new_hashes = []
         for a_and_k in args_and_kwargs:
@@ -237,7 +238,27 @@ class HTCMapper:
                 hashes = hashes,
             )
 
-        submit_dict = dict(
+        submit_description = SubmitDescription(
+            submit_description if submit_description is not None else {},
+            self.submit_description,
+            self.default_submit_dict,
+        )
+
+        sub = htcondor.Submit(dict(submit_description))
+
+        schedd = htcondor.Schedd()
+        with schedd.transaction() as txn:
+            submit_result = sub.queue_with_itemdata(txn, 1, iter(new_hashes))
+
+        return MapResult(
+            mapper = self,
+            clusterid = submit_result.cluster(),
+            hashes = hashes,
+        )
+
+    @property
+    def default_submit_dict(self):
+        return dict(
             jobbatchname = self.name,
             executable = str(Path(__file__).parent / 'run' / 'run.sh'),
             arguments = '$(Item)',
@@ -258,19 +279,6 @@ class HTCMapper:
             transfer_output_remaps = '"' + ';'.join([
                 f'$(Item).out={self.outputs_dir / "$(Item).out"}',
             ]) + '"',
-        )
-
-        print(dict(submit_dict))
-        sub = htcondor.Submit(submit_dict)
-
-        schedd = htcondor.Schedd()
-        with schedd.transaction() as txn:
-            submit_result = sub.queue_with_itemdata(txn, 1, iter(new_hashes))
-
-        return MapResult(
-            mapper = self,
-            clusterid = submit_result.cluster(),
-            hashes = hashes,
         )
 
     def clean(self):

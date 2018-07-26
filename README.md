@@ -42,3 +42,5 @@ To update `htcmap`, just do a `git pull` inside that directory (or `git checkout
 * What if the wrapper script needs additional setup?
   For example, mine needs some flags set, but that could maybe happen through a submit file option.
   But others may need more complicated setup.
+* The input hash currently depends on the insertion order of the kwarg dictionary.
+  If you put the kwargs in a different order, the hash won't be the same, and it'll count as a different run.
